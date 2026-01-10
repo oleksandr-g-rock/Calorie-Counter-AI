@@ -231,7 +231,8 @@ async def start_handler(msg: types.Message):
     await msg.answer(
         "👋 **Calorie-Counter-AI**\n\n"
         "📸 **Send Photo:** I'll count calories.\n"
-        "🎤 **Send Voice:** Ask what to eat, or describe your meal.\n\n"
+        "🎤 **Send Voice:** Ask what to eat, or describe your meal.\n"
+        "💬 **Send Text:** Ask any nutrition question.\n\n"
         "🇺🇦 Я розумію українську!"
     , parse_mode="Markdown")
 
@@ -251,8 +252,7 @@ async def handle_voice(message: types.Message):
             await transcript_msg.edit_text(f"❌ {transcribed_text}")
             return
 
-        # 3. FIX: Show Transcription PERMANENTLY.
-        # This updates the first message with the text and leaves it there.
+        # 3. Show Transcription PERMANENTLY
         await transcript_msg.edit_text(f"📝 {transcribed_text}")
         
         # 4. Start AI Analysis in a NEW message
@@ -266,7 +266,6 @@ async def handle_voice(message: types.Message):
             
     except Exception as e:
         logger.error(f"Voice Handler Error: {e}")
-        # If AI part fails, try to inform user in the AI message placeholder
         try:
              await message.answer("❌ Error getting AI response.")
         except:
@@ -293,6 +292,23 @@ async def handle_photo(msg: types.Message):
         
     except Exception as e:
         logger.error(f"Photo Handler Error: {e}")
+        await status_msg.edit_text(f"❌ Error: {str(e)}")
+
+# --- NEW HANDLER FOR TEXT MESSAGES ---
+@dp.message(F.text)
+async def handle_text(msg: types.Message):
+    """Handles plain text questions like 'Is this healthy?'"""
+    status_msg = await msg.reply("🔍 ...")
+    
+    try:
+        # Ask AI (Text Only Mode)
+        data = await analyze_content_with_openrouter(text_input=msg.text, base64_image=None)
+        
+        # Format and Send Result
+        await process_ai_response(msg, data, status_msg)
+        
+    except Exception as e:
+        logger.error(f"Text Handler Error: {e}")
         await status_msg.edit_text(f"❌ Error: {str(e)}")
 
 # ==============================================================================
