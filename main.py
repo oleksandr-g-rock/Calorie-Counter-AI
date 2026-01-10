@@ -4,6 +4,7 @@ import logging
 import asyncio
 import json
 import base64
+from datetime import datetime
 from aiohttp import web
 import aiohttp
 from aiogram import Bot, Dispatcher, F, types
@@ -25,8 +26,6 @@ WHISPER_API_URL = os.getenv("WHISPER_API_URL")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # --- MODEL CONFIGURATION ---
-# Default is set to Gemini 2.0 Flash (currently the best/fastest Vision model)
-# You can override this in Coolify env vars.
 MODEL_NAME = os.getenv("MODEL_NAME", "google/gemini-3-flash-preview")
 
 # --- DYNAMIC PORT CONFIGURATION ---
@@ -51,30 +50,62 @@ client = AsyncOpenAI(
     api_key=OPENROUTER_API_KEY,
 )
 
-# --- AI PROMPTS (ENGLISH) ---
-SYSTEM_PROMPT = """
-You are an expert AI Nutritionist with visual 3D analysis capabilities.
-
-Your task is to estimate calories based on FOOD VOLUME and DENSITY from an image.
-Since you are viewing a 2D image, use these heuristics:
-1. **Scale Reference:** Look for cutlery (~20cm), plates (~25-30cm), or glasses to judge size.
-2. **Density:** Distinguish between "airy" food (salad, popcorn) and "dense" food (meat, cheese, purees).
-3. **Hidden Ingredients:** Assume average oil/butter content for cooked dishes and sauces.
-
-Algorithm:
-1. Identify all food items.
-2. Estimate the weight (grams) of each item visually.
-3. Calculate Macros (Protein, Fat, Carbs) and Calories.
-
-Output strictly in JSON format:
-{
-  "total_calories": int,
-  "items": [
-    {"name": "string", "weight_g": int, "calories": int, "protein": float, "fat": float, "carbs": float}
-  ],
-  "tips": "string (short nutritional advice)"
+# --- UI TRANSLATIONS ---
+# Словник для заголовків бота
+UI_TEXTS = {
+    "en": {
+        "analyzing": "🔍 Analyzing nutrients & health...",
+        "no_food": "🤔 No food detected.",
+        "total": "Total",
+        "verdict": "Health Verdict",
+        "tip": "Tip",
+        "kcal": "kcal",
+        "error": "Error"
+    },
+    "uk": {
+        "analyzing": "🔍 Аналізую склад та корисність...",
+        "no_food": "🤔 На фото їжі не виявлено.",
+        "total": "ВСЬОГО",
+        "verdict": "Вердикт нутриціолога",
+        "tip": "Порада",
+        "kcal": "ккал",
+        "error": "Помилка"
+    }
 }
-If no food is detected, return an empty list for items and 0 for total_calories.
+
+# --- AI PROMPT ---
+SYSTEM_PROMPT_TEMPLATE = """
+You are an expert AI Nutritionist using 3D visual analysis.
+**Current Context:** {date_context}
+
+**GOAL:** The user wants to eat **low calorie but nutritious** meals.
+
+**LANGUAGE INSTRUCTION:** 1. Detect the language of the user's caption/voice.
+2. **If Ukrainian:** Output ALL string values (names, verdict, tips) in Ukrainian. Return "lang": "uk".
+3. **If English or No Text:** Output in English. Return "lang": "en".
+
+**TASKS:**
+1. **Analyze Volume:** Use cutlery/plates as scale reference.
+2. **Estimate Macros:** Calculate Protein, Fat, Carbs for the WHOLE meal.
+3. **Health Check:** Is this a good meal for the current time of day? Is it nutrient-dense?
+
+**Output strictly in JSON:**
+{{
+  "lang": "en" OR "uk",
+  "total_calories": int,
+  "total_macros": {{
+      "protein": int, 
+      "fat": int, 
+      "carbs": int
+  }},
+  "items": [
+    {{"name": "string (translated)", "weight_g": int, "calories": int, "protein": float, "fat": float, "carbs": float}}
+  ],
+  "health_verdict": "string (Is it healthy? Why? Max 2 sentences - translated)",
+  "tips": "string (Actionable advice - translated)"
+}}
+
+If no food is detected, return empty items and 0 totals.
 """
 
 # ==============================================================================
@@ -86,15 +117,13 @@ async def transcribe_audio(file_url: str) -> str:
     timeout_config = aiohttp.ClientTimeout(total=WHISPER_TIMEOUT_SECONDS)
     async with aiohttp.ClientSession(timeout=timeout_config) as session:
         try:
-            # Step A: Download from Telegram
             async with session.get(file_url) as response:
                 if response.status != 200:
                     return f"❌ Download Error: {response.status}"
                 audio_data = await response.read()
         except Exception as e:
-            return f"❌ Connection Error (Telegram): {e}"
+            return f"❌ Connection Error: {e}"
 
-        # Step B: Send to Whisper
         form_data = aiohttp.FormData()
         form_data.add_field('file', audio_data, filename='voice.ogg')
         form_data.add_field('model', 'whisper-1')
@@ -111,26 +140,28 @@ async def transcribe_audio(file_url: str) -> str:
             return "❌ Whisper Service Unavailable."
 
 async def analyze_image_with_openrouter(base64_image, user_caption=None):
-    """Send image to OpenRouter using the configured MODEL_NAME"""
+    now = datetime.now()
+    date_str = now.strftime("%Y-%m-%d, %A, %H:%M")
     
+    formatted_system_prompt = SYSTEM_PROMPT_TEMPLATE.format(date_context=date_str)
+
     user_content = [
-        {"type": "text", "text": "Analyze this meal in detail."},
+        {"type": "text", "text": "Analyze this meal strictly."},
         {
             "type": "image_url",
             "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"},
         },
     ]
     
-    # If user provided a caption (text or voice-to-text), add it to context
     if user_caption:
-        user_content.insert(0, {"type": "text", "text": f"User's additional description: {user_caption}"})
+        user_content.insert(0, {"type": "text", "text": f"User's input: {user_caption}"})
 
-    logger.info(f"🧠 Using AI Model: {MODEL_NAME}") # Log which model is being used
+    logger.info(f"🧠 Using Model: {MODEL_NAME} | Date: {date_str}")
 
     response = await client.chat.completions.create(
         model=MODEL_NAME, 
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": formatted_system_prompt},
             {"role": "user", "content": user_content}
         ],
         response_format={"type": "json_object"}
@@ -143,79 +174,92 @@ async def analyze_image_with_openrouter(base64_image, user_caption=None):
 
 @dp.message(Command("start"))
 async def start_handler(msg: types.Message):
+    # Bilingual start message
     await msg.answer(
-        "👋 **Hello! I am Calorie-Counter-AI.**\n\n"
-        "📸 Send me a **photo** of your food (you can add a caption).\n"
-        "🎤 Or send a **voice message** to describe what you ate."
+        "👋 **Calorie-Counter-AI**\n\n"
+        "🇺🇸 Send a photo. I speak English by default.\n"
+        "🇺🇦 Надішліть фото. Якщо напишете/скажете українською, я відповім українською!\n\n"
+        "📸 Photo + Caption = Better Accuracy."
     , parse_mode="Markdown")
 
 @dp.message(F.content_type == ContentType.VOICE)
 async def handle_voice(message: types.Message):
-    """Transcribe voice using your Whisper infra"""
-    status_msg = await message.reply("👂 Listening...")
+    status_msg = await message.reply("👂 ...")
     try:
         file = await bot.get_file(message.voice.file_id)
-        # Telegram API requires full URL for file download
         file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file.file_path}"
         
         text = await transcribe_audio(file_url)
         
-        await status_msg.edit_text(f"📝 **Transcribed:**\n{text}\n\n(You can copy this text and send it with a photo)")
+        await status_msg.edit_text(f"📝 **Note:**\n{text}\n\n(Now send the photo / Тепер надішли фото)")
             
     except Exception as e:
         logger.error(f"Voice Error: {e}")
-        await status_msg.edit_text("❌ Error processing voice message.")
+        await status_msg.edit_text("❌ Error processing voice.")
 
 @dp.message(F.photo)
 async def handle_photo(msg: types.Message):
-    """Main Calorie Counting Logic"""
-    status_msg = await msg.answer("🔍 Analyzing your meal...")
+    # Початкове повідомлення нейтральне, поки не знаємо мову
+    status_msg = await msg.answer("🔍 ...")
     
     try:
-        # 1. Download Photo
         photo = msg.photo[-1]
         file = await bot.get_file(photo.file_id)
         binary_io = await bot.download_file(file.file_path)
         base64_image = base64.b64encode(binary_io.read()).decode('utf-8')
 
-        # 2. Check for Caption
         caption = msg.caption if msg.caption else None
 
-        # 3. Analyze
+        # Call AI
         data = await analyze_image_with_openrouter(base64_image, caption)
         
-        # 4. Format Output
+        # --- LANGUAGE SWITCHER LOGIC ---
+        # Отримуємо код мови з відповіді AI (uk або en), дефолт en
+        lang_code = data.get("lang", "en") 
+        if lang_code not in ["uk", "en"]: 
+            lang_code = "en" # Fallback
+            
+        # Вибираємо правильні слова з нашого словника
+        ui = UI_TEXTS[lang_code]
+
+        # Перевірка чи є їжа
         if data.get('total_calories', 0) == 0:
-             await status_msg.edit_text("🤔 I couldn't detect any food in this picture.")
+             await status_msg.edit_text(ui["no_food"])
              return
 
-        text_response = f"🍽 **Total: {data['total_calories']} kcal**\n"
-        text_response += "──────────────────\n"
+        macros = data.get('total_macros', {'protein': 0, 'fat': 0, 'carbs': 0})
+        
+        # Формуємо відповідь мовою юзера
+        text_response = (
+            f"🍽 **{ui['total']}: {data['total_calories']} {ui['kcal']}**\n"
+            f"🥩 P: {macros['protein']}g | 🥑 F: {macros['fat']}g | 🍞 C: {macros['carbs']}g\n"
+            f"──────────────────\n"
+        )
         
         for item in data['items']:
-            text_response += (
-                f"🔹 **{item['name']}** (~{item['weight_g']}g)\n"
-                f"   └ {item['calories']} kcal (P:{item['protein']} | F:{item['fat']} | C:{item['carbs']})\n"
-            )
+            text_response += f"🔹 {item['name']} (~{item['weight_g']}g)\n"
+            text_response += f"   └ {item['calories']} {ui['kcal']}\n"
         
-        text_response += f"\n💡 *Tip:* {data.get('tips', 'Enjoy your meal!')}"
+        text_response += f"\n📊 **{ui['verdict']}:**\n"
+        text_response += f"{data.get('health_verdict', 'N/A')}\n"
+        
+        text_response += f"\n💡 **{ui['tip']}:** {data.get('tips', '')}"
         
         await status_msg.edit_text(text_response, parse_mode="Markdown")
         
     except Exception as e:
         logger.error(f"Photo Error: {e}")
-        await status_msg.edit_text(f"❌ Analysis failed: {str(e)}")
+        await status_msg.edit_text(f"❌ Error: {str(e)}")
 
 # ==============================================================================
-# 4. WEBHOOK LIFECYCLE & SERVER
+# 4. SERVER
 # ==============================================================================
 
 async def on_startup(bot: Bot):
-    logger.info(f"🔗 Setting Webhook to: {WEBHOOK_URL}")
+    logger.info(f"🔗 Webhook: {WEBHOOK_URL}")
     await bot.set_webhook(WEBHOOK_URL)
 
 async def on_shutdown(bot: Bot):
-    logger.info("🛑 Removing Webhook")
     await bot.delete_webhook()
 
 def main():
@@ -227,7 +271,7 @@ def main():
     webhook_handler.register(app, path=WEBHOOK_PATH)
     setup_application(app, dp, bot=bot)
 
-    logger.info(f"🚀 Starting server on PORT: {WEB_SERVER_PORT}")
+    logger.info(f"🚀 Server running on PORT: {WEB_SERVER_PORT}")
     web.run_app(app, host=WEB_SERVER_HOST, port=WEB_SERVER_PORT)
 
 if __name__ == "__main__":
