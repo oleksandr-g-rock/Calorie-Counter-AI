@@ -26,7 +26,7 @@ WHISPER_API_URL = os.getenv("WHISPER_API_URL")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # --- MODEL CONFIGURATION ---
-MODEL_NAME = os.getenv("MODEL_NAME", "google/gemini-3-flash-preview")
+MODEL_NAME = os.getenv("MODEL_NAME", "google/gemini-2.0-flash-exp")
 
 # --- DYNAMIC PORT CONFIGURATION ---
 WEB_SERVER_PORT = int(os.getenv("PORT", 8000))
@@ -51,61 +51,59 @@ client = AsyncOpenAI(
 )
 
 # --- UI TRANSLATIONS ---
-# Словник для заголовків бота
 UI_TEXTS = {
     "en": {
-        "analyzing": "🔍 Analyzing nutrients & health...",
-        "no_food": "🤔 No food detected.",
+        "analyzing": "🔍 Thinking...",
+        "no_food": "🤔 I couldn't understand the request or see any food.",
         "total": "Total",
         "verdict": "Health Verdict",
-        "tip": "Tip",
-        "kcal": "kcal",
-        "error": "Error"
+        "tip": "Recommendation",
+        "kcal": "kcal"
     },
     "uk": {
-        "analyzing": "🔍 Аналізую склад та корисність...",
-        "no_food": "🤔 На фото їжі не виявлено.",
+        "analyzing": "🔍 Думаю...",
+        "no_food": "🤔 Я не зрозумів запит або не бачу їжі.",
         "total": "ВСЬОГО",
         "verdict": "Вердикт нутриціолога",
-        "tip": "Порада",
-        "kcal": "ккал",
-        "error": "Помилка"
+        "tip": "Рекомендація",
+        "kcal": "ккал"
     }
 }
 
 # --- AI PROMPT ---
 SYSTEM_PROMPT_TEMPLATE = """
-You are an expert AI Nutritionist using 3D visual analysis.
+You are an expert AI Nutritionist. 
 **Current Context:** {date_context}
 
 **GOAL:** The user wants to eat **low calorie but nutritious** meals.
 
-**LANGUAGE INSTRUCTION:** 1. Detect the language of the user's caption/voice.
-2. **If Ukrainian:** Output ALL string values (names, verdict, tips) in Ukrainian. Return "lang": "uk".
-3. **If English or No Text:** Output in English. Return "lang": "en".
+**LANGUAGE INSTRUCTION:** 1. Detect the language of the user's input.
+2. **If Ukrainian:** Output ALL string values in Ukrainian. Return "lang": "uk".
+3. **If English:** Output in English. Return "lang": "en".
 
-**TASKS:**
-1. **Analyze Volume:** Use cutlery/plates as scale reference.
-2. **Estimate Macros:** Calculate Protein, Fat, Carbs for the WHOLE meal.
-3. **Health Check:** Is this a good meal for the current time of day? Is it nutrient-dense?
+**MODES:**
+A. **IMAGE PROVIDED:**
+   - Analyze Volume using cutlery/plates as scale.
+   - Estimate Macros (Protein, Fat, Carbs).
+   - Give a Health Check.
+
+B. **TEXT ONLY (No Image):**
+   - The user is asking for advice, a recipe, or a recommendation.
+   - Ignore 'total_calories' and 'items' (leave empty/zero).
+   - Put your answer in the 'tips' and 'health_verdict' fields.
+   - Be helpful, specific, and concise.
 
 **Output strictly in JSON:**
 {{
   "lang": "en" OR "uk",
   "total_calories": int,
-  "total_macros": {{
-      "protein": int, 
-      "fat": int, 
-      "carbs": int
-  }},
+  "total_macros": {{ "protein": int, "fat": int, "carbs": int }},
   "items": [
-    {{"name": "string (translated)", "weight_g": int, "calories": int, "protein": float, "fat": float, "carbs": float}}
+    {{"name": "string", "weight_g": int, "calories": int, "protein": float, "fat": float, "carbs": float}}
   ],
-  "health_verdict": "string (Is it healthy? Why? Max 2 sentences - translated)",
-  "tips": "string (Actionable advice - translated)"
+  "health_verdict": "string (Analysis or Main Answer - translated)",
+  "tips": "string (Actionable advice or Additional Details - translated)"
 }}
-
-If no food is detected, return empty items and 0 totals.
 """
 
 # ==============================================================================
@@ -119,10 +117,10 @@ async def transcribe_audio(file_url: str) -> str:
         try:
             async with session.get(file_url) as response:
                 if response.status != 200:
-                    return f"❌ Download Error: {response.status}"
+                    return f"Error: {response.status}"
                 audio_data = await response.read()
         except Exception as e:
-            return f"❌ Connection Error: {e}"
+            return f"Connection Error: {e}"
 
         form_data = aiohttp.FormData()
         form_data.add_field('file', audio_data, filename='voice.ogg')
@@ -134,29 +132,32 @@ async def transcribe_audio(file_url: str) -> str:
                 if resp.status == 200:
                     return await resp.text()
                 else:
-                    return f"❌ Whisper Error ({resp.status})"
+                    return f"Whisper Error ({resp.status})"
         except Exception as e:
             logger.error(f"Whisper Error: {e}")
-            return "❌ Whisper Service Unavailable."
+            return "Whisper Service Unavailable."
 
-async def analyze_image_with_openrouter(base64_image, user_caption=None):
+async def analyze_content_with_openrouter(text_input, base64_image=None):
+    """Handles both Image+Text AND Text-Only requests."""
     now = datetime.now()
     date_str = now.strftime("%Y-%m-%d, %A, %H:%M")
     
     formatted_system_prompt = SYSTEM_PROMPT_TEMPLATE.format(date_context=date_str)
 
-    user_content = [
-        {"type": "text", "text": "Analyze this meal strictly."},
-        {
-            "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"},
-        },
-    ]
+    user_content = []
     
-    if user_caption:
-        user_content.insert(0, {"type": "text", "text": f"User's input: {user_caption}"})
+    # Add text context (required)
+    prompt_text = text_input if text_input else "Analyze this."
+    user_content.append({"type": "text", "text": prompt_text})
 
-    logger.info(f"🧠 Using Model: {MODEL_NAME} | Date: {date_str}")
+    # Add image if present
+    if base64_image:
+        user_content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
+        })
+
+    logger.info(f"🧠 Model: {MODEL_NAME} | Input: {'Image+Text' if base64_image else 'Text Only'}")
 
     response = await client.chat.completions.create(
         model=MODEL_NAME, 
@@ -168,41 +169,115 @@ async def analyze_image_with_openrouter(base64_image, user_caption=None):
     )
     return json.loads(response.choices[0].message.content)
 
+async def process_ai_response(msg: types.Message, data: dict, status_msg: types.Message):
+    """Common logic to format and send AI response"""
+    
+    # 1. Determine Language
+    lang_code = data.get("lang", "en") 
+    if lang_code not in ["uk", "en"]: 
+        lang_code = "en"
+    ui = UI_TEXTS[lang_code]
+
+    # 2. Check content type (Food Analysis vs Text Advice)
+    total_cals = data.get('total_calories', 0)
+    has_items = len(data.get('items', [])) > 0
+    
+    # Scenario A: It's a Text Advice (Zero calories, no items, but has text)
+    if total_cals == 0 and not has_items:
+        verdict = data.get('health_verdict', '')
+        tips = data.get('tips', '')
+        
+        # If response is empty, show error
+        if not verdict and not tips:
+            await status_msg.edit_text(ui["no_food"])
+            return
+
+        # Show Consult Response
+        response_text = f"👩‍⚕️ **{ui['verdict']}**\n{verdict}\n\n"
+        if tips:
+            response_text += f"💡 **{ui['tip']}**\n{tips}"
+            
+        await status_msg.edit_text(response_text, parse_mode="Markdown")
+        return
+
+    # Scenario B: Food Analysis (Calories found)
+    macros = data.get('total_macros', {'protein': 0, 'fat': 0, 'carbs': 0})
+    
+    text_response = (
+        f"🍽 **{ui['total']}: {data['total_calories']} {ui['kcal']}**\n"
+        f"🥩 P: {macros['protein']}g | 🥑 F: {macros['fat']}g | 🍞 C: {macros['carbs']}g\n"
+        f"──────────────────\n"
+    )
+    
+    for item in data['items']:
+        text_response += f"🔹 {item['name']} (~{item['weight_g']}g)\n"
+        text_response += f"   └ {item['calories']} {ui['kcal']}\n"
+    
+    text_response += f"\n📊 **{ui['verdict']}:**\n"
+    text_response += f"{data.get('health_verdict', 'N/A')}\n"
+    
+    if data.get('tips'):
+        text_response += f"\n💡 **{ui['tip']}:** {data.get('tips', '')}"
+    
+    await status_msg.edit_text(text_response, parse_mode="Markdown")
+
+
 # ==============================================================================
 # 3. HANDLERS
 # ==============================================================================
 
 @dp.message(Command("start"))
 async def start_handler(msg: types.Message):
-    # Bilingual start message
     await msg.answer(
         "👋 **Calorie-Counter-AI**\n\n"
-        "🇺🇸 Send a photo. I speak English by default.\n"
-        "🇺🇦 Надішліть фото. Якщо напишете/скажете українською, я відповім українською!\n\n"
-        "📸 Photo + Caption = Better Accuracy."
+        "📸 **Send Photo:** I'll count calories.\n"
+        "🎤 **Send Voice:** Ask what to eat, or describe your meal.\n\n"
+        "🇺🇦 Я розумію українську!"
     , parse_mode="Markdown")
 
 @dp.message(F.content_type == ContentType.VOICE)
 async def handle_voice(message: types.Message):
-    status_msg = await message.reply("👂 ...")
+    # 1. Start processing (First message)
+    transcript_msg = await message.reply("👂 ...")
+    
     try:
+        # 2. Transcribe
         file = await bot.get_file(message.voice.file_id)
         file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file.file_path}"
         
-        text = await transcribe_audio(file_url)
+        transcribed_text = await transcribe_audio(file_url)
         
-        await status_msg.edit_text(f"📝 **Note:**\n{text}\n\n(Now send the photo / Тепер надішли фото)")
+        if "Error" in transcribed_text:
+            await transcript_msg.edit_text(f"❌ {transcribed_text}")
+            return
+
+        # 3. FIX: Show Transcription PERMANENTLY.
+        # This updates the first message with the text and leaves it there.
+        await transcript_msg.edit_text(f"📝 {transcribed_text}")
+        
+        # 4. Start AI Analysis in a NEW message
+        ai_msg = await message.answer("🔍 ...")
+
+        # 5. Ask AI (Text Only Mode)
+        data = await analyze_content_with_openrouter(text_input=transcribed_text, base64_image=None)
+        
+        # 6. Fill the NEW message with AI response
+        await process_ai_response(message, data, ai_msg)
             
     except Exception as e:
-        logger.error(f"Voice Error: {e}")
-        await status_msg.edit_text("❌ Error processing voice.")
+        logger.error(f"Voice Handler Error: {e}")
+        # If AI part fails, try to inform user in the AI message placeholder
+        try:
+             await message.answer("❌ Error getting AI response.")
+        except:
+             pass
 
 @dp.message(F.photo)
 async def handle_photo(msg: types.Message):
-    # Початкове повідомлення нейтральне, поки не знаємо мову
     status_msg = await msg.answer("🔍 ...")
     
     try:
+        # 1. Process Image
         photo = msg.photo[-1]
         file = await bot.get_file(photo.file_id)
         binary_io = await bot.download_file(file.file_path)
@@ -210,47 +285,15 @@ async def handle_photo(msg: types.Message):
 
         caption = msg.caption if msg.caption else None
 
-        # Call AI
-        data = await analyze_image_with_openrouter(base64_image, caption)
+        # 2. Ask AI (Image + Text Mode)
+        data = await analyze_content_with_openrouter(text_input=caption, base64_image=base64_image)
         
-        # --- LANGUAGE SWITCHER LOGIC ---
-        # Отримуємо код мови з відповіді AI (uk або en), дефолт en
-        lang_code = data.get("lang", "en") 
-        if lang_code not in ["uk", "en"]: 
-            lang_code = "en" # Fallback
-            
-        # Вибираємо правильні слова з нашого словника
-        ui = UI_TEXTS[lang_code]
-
-        # Перевірка чи є їжа
-        if data.get('total_calories', 0) == 0:
-             await status_msg.edit_text(ui["no_food"])
-             return
-
-        macros = data.get('total_macros', {'protein': 0, 'fat': 0, 'carbs': 0})
-        
-        # Формуємо відповідь мовою юзера
-        text_response = (
-            f"🍽 **{ui['total']}: {data['total_calories']} {ui['kcal']}**\n"
-            f"🥩 P: {macros['protein']}g | 🥑 F: {macros['fat']}g | 🍞 C: {macros['carbs']}g\n"
-            f"──────────────────\n"
-        )
-        
-        for item in data['items']:
-            text_response += f"🔹 {item['name']} (~{item['weight_g']}g)\n"
-            text_response += f"   └ {item['calories']} {ui['kcal']}\n"
-        
-        text_response += f"\n📊 **{ui['verdict']}:**\n"
-        text_response += f"{data.get('health_verdict', 'N/A')}\n"
-        
-        text_response += f"\n💡 **{ui['tip']}:** {data.get('tips', '')}"
-        
-        await status_msg.edit_text(text_response, parse_mode="Markdown")
+        # 3. Format and Send Result
+        await process_ai_response(msg, data, status_msg)
         
     except Exception as e:
-        logger.error(f"Photo Error: {e}")
+        logger.error(f"Photo Handler Error: {e}")
         await status_msg.edit_text(f"❌ Error: {str(e)}")
-
 
 # ==============================================================================
 # 4. SERVER
