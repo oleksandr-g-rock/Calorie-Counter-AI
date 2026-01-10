@@ -24,6 +24,11 @@ BASE_URL = os.getenv("BASE_URL")
 WHISPER_API_URL = os.getenv("WHISPER_API_URL")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
+# --- MODEL CONFIGURATION ---
+# Default is set to Gemini 2.0 Flash (currently the best/fastest Vision model)
+# You can override this in Coolify env vars.
+MODEL_NAME = os.getenv("MODEL_NAME", "google/gemini-3-flash-preview")
+
 # --- DYNAMIC PORT CONFIGURATION ---
 WEB_SERVER_PORT = int(os.getenv("PORT", 8000))
 WEB_SERVER_HOST = "0.0.0.0"
@@ -106,7 +111,7 @@ async def transcribe_audio(file_url: str) -> str:
             return "❌ Whisper Service Unavailable."
 
 async def analyze_image_with_openrouter(base64_image, user_caption=None):
-    """Send image to OpenRouter (GPT-4o)"""
+    """Send image to OpenRouter using the configured MODEL_NAME"""
     
     user_content = [
         {"type": "text", "text": "Analyze this meal in detail."},
@@ -120,8 +125,10 @@ async def analyze_image_with_openrouter(base64_image, user_caption=None):
     if user_caption:
         user_content.insert(0, {"type": "text", "text": f"User's additional description: {user_caption}"})
 
+    logger.info(f"🧠 Using AI Model: {MODEL_NAME}") # Log which model is being used
+
     response = await client.chat.completions.create(
-        model="openai/gpt-4o-2024-08-06", # Or google/gemini-flash-1.5
+        model=MODEL_NAME, 
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_content}
