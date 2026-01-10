@@ -93,6 +93,13 @@ B. **TEXT ONLY (No Image):**
    - Put your answer in the 'tips' and 'health_verdict' fields.
    - Be helpful, specific, and concise.
 
+**SAFETY & FORMATTING RULES:**
+- **No Technical Tags:** Do not output tags like <tool_code> or <thinking>.
+- **No Hallucinations:** Do not invent data. If you don't know, say so.
+- **Conciseness:** Stop immediately after giving advice.
+- **Formatting:** Do NOT use markdown bolding (asterisks like **text**). Telegram does not always render them well. Use plain text and emojis only.
+- **Safety:** Decline to answer requests related to illegal acts or dangerous substances.
+
 **Output strictly in JSON:**
 {{
   "lang": "en" OR "uk",
@@ -221,7 +228,6 @@ async def process_ai_response(msg: types.Message, data: dict, status_msg: types.
     
     await status_msg.edit_text(text_response, parse_mode="Markdown")
 
-
 # ==============================================================================
 # 3. HANDLERS
 # ==============================================================================
@@ -294,7 +300,6 @@ async def handle_photo(msg: types.Message):
         logger.error(f"Photo Handler Error: {e}")
         await status_msg.edit_text(f"❌ Error: {str(e)}")
 
-# --- NEW HANDLER FOR TEXT MESSAGES ---
 @dp.message(F.text)
 async def handle_text(msg: types.Message):
     """Handles plain text questions like 'Is this healthy?'"""
