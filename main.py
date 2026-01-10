@@ -13,7 +13,6 @@ from aiogram.filters import Command
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from openai import AsyncOpenAI
 
-
 # ==============================================================================
 # 1. CONFIGURATION
 # ==============================================================================
