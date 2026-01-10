@@ -251,6 +251,7 @@ async def handle_photo(msg: types.Message):
         logger.error(f"Photo Error: {e}")
         await status_msg.edit_text(f"❌ Error: {str(e)}")
 
+
 # ==============================================================================
 # 4. SERVER
 # ==============================================================================
