@@ -1,5 +1,5 @@
 <div align="center">
-<img src="https://img.icons8.com/color/200/avocado.png" alt="Calorie AI Logo" width="200"/>
+<img src="calorie_counter.png" alt="Calorie AI Logo" width="200"/>
 
 # 🥗 Calorie-Counter-AI
 **Your Smart Nutrition Assistant powered by Vision & Voice AI**
