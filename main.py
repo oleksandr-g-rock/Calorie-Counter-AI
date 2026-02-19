@@ -12,6 +12,7 @@ from aiogram.enums import ContentType
 from aiogram.filters import Command
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from openai import AsyncOpenAI
+from groq import AsyncGroq
 
 # ==============================================================================
 # 1. CONFIGURATION
@@ -22,8 +23,8 @@ logger = logging.getLogger(__name__)
 # --- ENV VARIABLES ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 BASE_URL = os.getenv("BASE_URL")
-WHISPER_API_URL = os.getenv("WHISPER_API_URL")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+GROQ_WHISPER_API_KEY = os.getenv("GROQ_WHISPER_API_KEY")
 
 # --- MODEL CONFIGURATION ---
 MODEL_NAME = os.getenv("MODEL_NAME", "google/gemini-2.0-flash-exp")
@@ -34,13 +35,12 @@ WEB_SERVER_HOST = "0.0.0.0"
 WEBHOOK_PATH = "/webhook"
 
 # Validation
-if not TELEGRAM_TOKEN or not BASE_URL or not WHISPER_API_URL or not OPENROUTER_API_KEY:
+if not TELEGRAM_TOKEN or not BASE_URL or not OPENROUTER_API_KEY or not GROQ_WHISPER_API_KEY:
     logger.error("❌ MISSING VARIABLES! Check tokens and API URLs.")
     sys.exit(1)
 
 WEBHOOK_URL = f"{BASE_URL}{WEBHOOK_PATH}"
-TRANSCRIPTION_ENDPOINT = f"{WHISPER_API_URL}/audio/transcriptions"
-WHISPER_TIMEOUT_SECONDS = 900 
+AUDIO_DOWNLOAD_TIMEOUT_SECONDS = 900
 
 # --- INITIALIZATION ---
 bot = Bot(token=TELEGRAM_TOKEN)
@@ -49,6 +49,7 @@ client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
 )
+groq_client = AsyncGroq(api_key=GROQ_WHISPER_API_KEY)
 
 # --- UI TRANSLATIONS ---
 UI_TEXTS = {
@@ -118,8 +119,8 @@ B. **TEXT ONLY (No Image):**
 # ==============================================================================
 
 async def transcribe_audio(file_url: str) -> str:
-    """Send audio to self-hosted Whisper"""
-    timeout_config = aiohttp.ClientTimeout(total=WHISPER_TIMEOUT_SECONDS)
+    """Download audio from Telegram and transcribe via Groq Whisper API."""
+    timeout_config = aiohttp.ClientTimeout(total=AUDIO_DOWNLOAD_TIMEOUT_SECONDS)
     async with aiohttp.ClientSession(timeout=timeout_config) as session:
         try:
             async with session.get(file_url) as response:
@@ -129,20 +130,17 @@ async def transcribe_audio(file_url: str) -> str:
         except Exception as e:
             return f"Connection Error: {e}"
 
-        form_data = aiohttp.FormData()
-        form_data.add_field('file', audio_data, filename='voice.ogg')
-        form_data.add_field('model', 'whisper-1')
-        form_data.add_field('response_format', 'text')
-
-        try:
-            async with session.post(TRANSCRIPTION_ENDPOINT, data=form_data) as resp:
-                if resp.status == 200:
-                    return await resp.text()
-                else:
-                    return f"Whisper Error ({resp.status})"
-        except Exception as e:
-            logger.error(f"Whisper Error: {e}")
-            return "Whisper Service Unavailable."
+    try:
+        transcription = await groq_client.audio.transcriptions.create(
+            file=("voice.ogg", audio_data),
+            model="whisper-large-v3",
+            temperature=0,
+            response_format="verbose_json",
+        )
+        return transcription.text
+    except Exception as e:
+        logger.error(f"Groq Whisper Error: {e}")
+        return "Groq Whisper Service Unavailable."
 
 async def analyze_content_with_openrouter(text_input, base64_image=None):
     """Handles both Image+Text AND Text-Only requests."""
