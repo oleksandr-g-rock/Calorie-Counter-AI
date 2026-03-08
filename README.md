@@ -71,6 +71,7 @@ Control the bot using Environment Variables.
 | **WHISPER_API_URL** | ✅ | Address of your Whisper backend (internal or cloud). |
 | **MODEL_NAME** | ❌ | AI Model to use (Default: `google/gemini-2.0-flash-exp`). |
 | **PORT** | ❌ | Internal app port (Default: `8000`). |
+| **TOPIC_ID** | ❌ | Telegram Forum Topic ID. When set, the bot only responds to messages from that topic and silently ignores all others. Useful for supergroups with multiple Topics where each topic hosts a separate bot. |
 
 ---
 

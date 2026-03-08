@@ -9,7 +9,7 @@ from aiohttp import web
 import aiohttp
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.enums import ContentType
-from aiogram.filters import Command
+from aiogram.filters import BaseFilter, Command
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from openai import AsyncOpenAI
 from groq import AsyncGroq
@@ -25,6 +25,15 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 BASE_URL = os.getenv("BASE_URL")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 GROQ_WHISPER_API_KEY = os.getenv("GROQ_WHISPER_API_KEY")
+_topic_id_raw = os.getenv("TOPIC_ID")
+if _topic_id_raw is not None:
+    try:
+        TOPIC_ID = int(_topic_id_raw)
+    except ValueError:
+        logger.error(f"❌ Invalid TOPIC_ID value: '{_topic_id_raw}'. Must be an integer.")
+        sys.exit(1)
+else:
+    TOPIC_ID = None
 
 # --- MODEL CONFIGURATION ---
 MODEL_NAME = os.getenv("MODEL_NAME", "google/gemini-2.0-flash-exp")
@@ -117,6 +126,21 @@ B. **TEXT ONLY (No Image):**
 # ==============================================================================
 # 2. LOGIC (FUNCTIONS)
 # ==============================================================================
+
+class TopicFilter(BaseFilter):
+    """Pass only messages that belong to the configured TOPIC_ID.
+
+    If TOPIC_ID is not set the filter is a no-op and every message passes.
+    If TOPIC_ID is set, only messages whose ``message_thread_id`` matches are
+    allowed; messages without a thread (``message_thread_id`` is ``None``) or
+    from a different topic are silently blocked.
+    """
+
+    async def __call__(self, message: types.Message) -> bool:
+        if TOPIC_ID is None:
+            return True
+        return message.message_thread_id == TOPIC_ID
+
 
 async def transcribe_audio(file_url: str) -> str:
     """Download audio from Telegram and transcribe via Groq Whisper API."""
@@ -230,7 +254,7 @@ async def process_ai_response(msg: types.Message, data: dict, status_msg: types.
 # 3. HANDLERS
 # ==============================================================================
 
-@dp.message(Command("start"))
+@dp.message(TopicFilter(), Command("start"))
 async def start_handler(msg: types.Message):
     await msg.answer(
         "👋 **Calorie-Counter-AI**\n\n"
@@ -240,7 +264,7 @@ async def start_handler(msg: types.Message):
         "🇺🇦 Я розумію українську!"
     , parse_mode="Markdown")
 
-@dp.message(F.content_type == ContentType.VOICE)
+@dp.message(TopicFilter(), F.content_type == ContentType.VOICE)
 async def handle_voice(message: types.Message):
     # 1. Start processing (First message)
     transcript_msg = await message.reply("👂 ...")
@@ -275,7 +299,7 @@ async def handle_voice(message: types.Message):
         except:
              pass
 
-@dp.message(F.photo)
+@dp.message(TopicFilter(), F.photo)
 async def handle_photo(msg: types.Message):
     status_msg = await msg.answer("🔍 ...")
     
@@ -298,7 +322,7 @@ async def handle_photo(msg: types.Message):
         logger.error(f"Photo Handler Error: {e}")
         await status_msg.edit_text(f"❌ Error: {str(e)}")
 
-@dp.message(F.text)
+@dp.message(TopicFilter(), F.text)
 async def handle_text(msg: types.Message):
     """Handles plain text questions like 'Is this healthy?'"""
     status_msg = await msg.reply("🔍 ...")
